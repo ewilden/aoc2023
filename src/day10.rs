@@ -152,17 +152,12 @@ fn part2(input: &HashMap<Coords, Tile>) -> usize {
         unreachable!()
     };
 
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-    enum EntryState {
-        Outside,
-        Inside,
-        EnteringN,
-        EnteringS,
-        ExitingN,
-        ExitingS,
-    }
+    const IN_N: u8 = 1 << 0;
+    const IN_S: u8 = 1 << 1;
+    const IN: u8 = IN_N | IN_S;
+    const OUT: u8 = 0;
 
-    let mut entry_state = EntryState::Outside;
+    let mut entry_state = OUT;
     let mut inside_count = 0usize;
 
     let get_pipe = |loc| {
@@ -185,7 +180,7 @@ fn part2(input: &HashMap<Coords, Tile>) -> usize {
     for r in min_r - 1..=max_r + 1 {
         assert_eq!(
             entry_state,
-            EntryState::Outside,
+            OUT,
             "{r} {:?}",
             pipes
                 .iter()
@@ -196,56 +191,14 @@ fn part2(input: &HashMap<Coords, Tile>) -> usize {
         for c in min_c - 1..=max_c + 1 {
             if pipes.contains(&(r, c)) {
                 let pipe = get_pipe((r, c));
-                match entry_state {
-                    EntryState::Outside => {
-                        if pipe.contains(&Dir::N) && pipe.contains(&Dir::S) {
-                            entry_state = EntryState::Inside;
-                        } else if pipe.contains(&Dir::N) {
-                            entry_state = EntryState::EnteringN;
-                        } else if pipe.contains(&Dir::S) {
-                            entry_state = EntryState::EnteringS;
-                        }
-                    }
-                    EntryState::Inside => {
-                        if pipe.contains(&Dir::N) && pipe.contains(&Dir::S) {
-                            entry_state = EntryState::Outside;
-                        } else if pipe.contains(&Dir::N) {
-                            entry_state = EntryState::ExitingN;
-                        } else if pipe.contains(&Dir::S) {
-                            entry_state = EntryState::ExitingS;
-                        }
-                    }
-                    EntryState::EnteringN => {
-                        if pipe.contains(&Dir::N) {
-                            entry_state = EntryState::Outside;
-                        } else if pipe.contains(&Dir::S) {
-                            entry_state = EntryState::Inside;
-                        }
-                    }
-                    EntryState::EnteringS => {
-                        if pipe.contains(&Dir::N) {
-                            entry_state = EntryState::Inside;
-                        } else if pipe.contains(&Dir::S) {
-                            entry_state = EntryState::Outside;
-                        }
-                    }
-                    EntryState::ExitingN => {
-                        if pipe.contains(&Dir::N) {
-                            entry_state = EntryState::Inside;
-                        } else if pipe.contains(&Dir::S) {
-                            entry_state = EntryState::Outside;
-                        }
-                    }
-                    EntryState::ExitingS => {
-                        if pipe.contains(&Dir::N) {
-                            entry_state = EntryState::Outside;
-                        } else if pipe.contains(&Dir::S) {
-                            entry_state = EntryState::Inside;
-                        }
-                    }
+                if pipe.contains(&Dir::N) {
+                    entry_state ^= IN_N;
+                }
+                if pipe.contains(&Dir::S) {
+                    entry_state ^= IN_S;
                 }
             } else {
-                if entry_state == EntryState::Inside {
+                if entry_state == IN {
                     inside_count += 1;
                 }
             }
