@@ -263,12 +263,12 @@ fn part2(input: &[Line]) -> usize {
                 sizes,
                 force_next_damaged: _,
             } = line.clone();
-            let runs = (1..=5)
-                .map(|_| runs.clone())
-                .into_iter()
-                .intersperse(vec![Run::Unknown(1)])
-                .flatten()
-                .collect_vec();
+            let runs = Itertools::intersperse(
+                (1..=5).map(|_| runs.clone()).into_iter(),
+                vec![Run::Unknown(1)],
+            )
+            .flatten()
+            .collect_vec();
             let sizes = (1..=5).map(|_| sizes.clone()).flatten().collect_vec();
             num_arrangements(
                 &mut table,
