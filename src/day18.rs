@@ -1,7 +1,9 @@
-use std::{collections::BTreeMap, ops::Range};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Bound,
+};
 
 use aoc_runner_derive::{aoc, aoc_generator};
-use intervaltree::IntervalTree;
 use itertools::Itertools;
 use num_derive::ToPrimitive;
 
@@ -68,19 +70,15 @@ fn parse(input: &str) -> Vec<Dig> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct ColSpec {
-    col: i64,
-    hits_start: bool,
-    hits_middle: bool,
-    hits_end: bool,
+enum ColDir {
+    IncreasingAkaSouth,
+    DecreasingAkaNorth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum InsideState {
-    Outside,
-    Inside,
-    EnteredTop,
-    ExitedTop,
+enum Turn {
+    Clockwise,
+    CounterClockwise,
 }
 
 #[aoc(day18, part1)]
@@ -96,180 +94,165 @@ fn part1(input: &[Dig]) -> i64 {
         digs
     };
 
-    for (a, b) in input.iter().tuple_windows::<(_, _)>() {
-        let dirs = [a.dir, b.dir];
-        // No double backs or continues?
-        assert_eq!(
-            dirs.contains(&Dir::Up) || dirs.contains(&Dir::Down),
-            dirs.contains(&Dir::Right) || dirs.contains(&Dir::Left)
-        );
-        // No length-1 digs?
-        assert!(a.dist > 1);
-        assert!(b.dist > 1);
-    }
+    let vertical_digs_by_column: BTreeMap<i64, BTreeSet<(i64, i64, ColDir, Turn, Turn)>> = digs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (a, b))| {
+            let digs = &digs;
+            (a.1 == b.1).then(move || {
+                let (col, (rowstart, rowend, coldir)) = if b.0 > a.0 {
+                    (a.1, (a.0, b.0, ColDir::IncreasingAkaSouth))
+                } else {
+                    (a.1, (b.0, a.0, ColDir::DecreasingAkaNorth))
+                };
 
-    let gather_rows = |digs: &[((i64, i64), (i64, i64))]| {
-        let row_to_digs_in_that_row = digs
-            .iter()
-            .filter_map(|dig| {
-                let (a, b) = *dig;
-                (a.0 == b.0).then_some((a.0, a.1.min(b.1)..a.1.max(b.1) + 1))
+                let prevdig = digs[(i - 1 + digs.len()) % digs.len()];
+                assert_eq!(prevdig.1, *a);
+                let prevloc = prevdig.0;
+
+                let nextdig = digs[(i + 1 + digs.len()) % digs.len()];
+                assert_eq!(*b, nextdig.0);
+                let nextloc = nextdig.1;
+
+                let prevturn = {
+                    // Must have been horizontal.
+                    assert_eq!(prevloc.0, a.0);
+                    if prevloc.1 < a.1 {
+                        // Previously was heading rightwards.
+                        match coldir {
+                            ColDir::IncreasingAkaSouth => Turn::Clockwise,
+                            ColDir::DecreasingAkaNorth => Turn::CounterClockwise,
+                        }
+                    } else {
+                        // previously was heading leftwards.
+                        match coldir {
+                            ColDir::IncreasingAkaSouth => Turn::CounterClockwise,
+                            ColDir::DecreasingAkaNorth => Turn::Clockwise,
+                        }
+                    }
+                };
+
+                let nextturn = {
+                    // Must next be horizontal.
+                    assert_eq!(b.0, nextloc.0);
+                    if b.1 < nextloc.1 {
+                        // Next, heading rightwards.
+                        match coldir {
+                            ColDir::IncreasingAkaSouth => Turn::CounterClockwise,
+                            ColDir::DecreasingAkaNorth => Turn::Clockwise,
+                        }
+                    } else {
+                        // Next, heading leftwards.
+                        match coldir {
+                            ColDir::IncreasingAkaSouth => Turn::Clockwise,
+                            ColDir::DecreasingAkaNorth => Turn::CounterClockwise,
+                        }
+                    }
+                };
+                (col, (rowstart, rowend, coldir, prevturn, nextturn))
             })
-            .into_grouping_map_by(|entry| {
-                let (row, _col_range) = entry;
-                *row
-            })
-            .collect::<Vec<(i64, Range<i64>)>>();
-        row_to_digs_in_that_row
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    IntervalTree::from_iter(v.into_iter().map(|(r, range)| {
-                        assert_eq!(k, r);
-                        (range, ())
-                    })),
-                )
-            })
-            .collect::<BTreeMap<_, _>>()
-    };
+        })
+        .into_grouping_map()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
 
-    let row_to_digs_in_that_row = gather_rows(&digs);
-    let col_to_digs_in_that_col = gather_rows(
-        &digs
-            .iter()
-            .map(|(a, b)| ((a.1, a.0), (b.1, b.0)))
-            .collect_vec(),
-    );
+    let mut area = 0;
+    let mut included_rows: BTreeSet<(i64, i64)> = BTreeSet::new();
+    let mut prev_col = None;
 
-    let mut area = 0i64;
-    for (position, (rowstart, rowend)) in row_to_digs_in_that_row
-        .keys()
-        .copied()
-        .tuple_windows::<(_, _)>()
-        .with_position()
-    {
-        let is_last_row = match position {
-            itertools::Position::Last => true,
-            itertools::Position::Only => unreachable!(),
-            _ => false,
-        };
-        let height = rowend - rowstart;
-        let mut inside = InsideState::Outside;
-
-        for (position, (first_col, last_col)) in col_to_digs_in_that_col
-            .iter()
-            .filter_map(|(col, col_digs)| {
-                let hits_start = col_digs.query_point(rowstart).next().is_some();
-                let hits_middle = col_digs.query_point(rowstart + 1).next().is_some();
-                let hits_end = col_digs.query_point(rowend).next().is_some();
-                (hits_start).then_some(ColSpec {
-                    col: *col,
-                    hits_start,
-                    hits_middle,
-                    hits_end,
-                })
-            })
-            .tuple_windows::<(_, _)>()
-            .with_position()
-        {
-            let is_last_col = match position {
-                itertools::Position::First | itertools::Position::Middle => false,
-                itertools::Position::Last | itertools::Position::Only => true,
-            };
-
-            inside = match (inside, first_col.hits_middle) {
-                (InsideState::Outside, true) => InsideState::Inside,
-                (InsideState::Outside, false) => InsideState::EnteredTop,
-                (InsideState::Inside, true) => InsideState::Outside,
-                (InsideState::Inside, false) => InsideState::ExitedTop,
-                (InsideState::EnteredTop, true) => InsideState::Inside,
-                (InsideState::EnteredTop, false) => InsideState::Outside,
-                (InsideState::ExitedTop, true) => InsideState::Outside,
-                (InsideState::ExitedTop, false) => InsideState::Inside,
-            };
-
-            let width = last_col.col - first_col.col;
-
-            assert!(width > 1);
-            let to_add_bottom_length = if row_to_digs_in_that_row
-                .get(&rowend)
-                .unwrap()
-                .query_point(first_col.col + 1)
-                .next()
-                .is_some()
-            {
-                // Include the bottom of this row as well.
-                width
-            } else {
-                0
-            };
-
-            match inside {
-                InsideState::Outside => {}
-                InsideState::Inside => {
-                    area += height * width + to_add_bottom_length;
+    for (col, intervals) in vertical_digs_by_column {
+        let prev_included_rows: BTreeSet<(i64, i64)> = included_rows.clone();
+        let mut rows_to_remove: BTreeSet<(i64, i64)> = BTreeSet::new();
+        for (lo, hi, dir, prevturn, nextturn) in intervals {
+            match dir {
+                ColDir::IncreasingAkaSouth => {
+                    let keep_lo_included = match prevturn {
+                        Turn::Clockwise => false,
+                        Turn::CounterClockwise => true,
+                    };
+                    let keep_hi_included = match nextturn {
+                        Turn::Clockwise => false,
+                        Turn::CounterClockwise => true,
+                    };
+                    rows_to_remove.insert((
+                        lo + if keep_lo_included { 1 } else { 0 },
+                        hi - if keep_hi_included { 1 } else { 0 },
+                    ));
                 }
-                InsideState::EnteredTop => {
-                    // area += width;
-                }
-                InsideState::ExitedTop => {
-                    area += height * width + to_add_bottom_length;
+                ColDir::DecreasingAkaNorth => {
+                    // Entering, so we can just include the edges.
+                    included_rows.insert((lo, hi));
                 }
             }
-
-            // if matches!(inside, InsideState::Outside) && first_col.hits_end {
-            //     area += height;
-            // }
-
-            // match (inside_top, inside_bottom) {
-            //     (true, true) => {
-            //         area += height * width;
-            //     }
-            //     (true, false) => {
-            //         area += width;
-            //     }
-            //     (false, true) => {
-            //         area += width;
-            //     }
-            //     (false, false) => {
-            //         // Not inside.
-            //         // if inside_
-            //     }
-            // }
         }
 
-        // assert!(
-        //     matches!(
-        //         inside,
-        //         InsideState::Inside | InsideState::ExitedTop | InsideState::EnteredTop
-        //     ),
-        //     "not inside at end of {rowstart}..={rowend}"
-        // );
-        // area += height;
-        // assert!(inside_top && inside_bottom);
-        // assert!(saw_anything);
-        // if is_last_row {
-        //     for dig in row_to_digs_in_that_row.get(&rowend).unwrap().iter_sorted() {
-        //         let Range { start, end } = dig.range;
-        //         area += end - start + 1;
-        //     }
-        // }
+        // Consolidate included_rows.
+        included_rows = included_rows
+            .into_iter()
+            .coalesce(|prev, curr| {
+                if prev.1 >= curr.0 - 1 {
+                    Ok((prev.0.min(curr.0), prev.1.max(curr.1)))
+                } else {
+                    Err((prev, curr))
+                }
+            })
+            .collect();
+
+        // Remove any removed rows.
+        for removed in rows_to_remove {
+            let first_potential_overlap = included_rows.range(..(removed.0 - 1, 0)).rev().next();
+            let last_potential_overlap = included_rows
+                .range((Bound::Excluded((removed.1 + 1, 0)), Bound::Unbounded))
+                .next();
+            let all_overlaps = included_rows
+                .range((
+                    match first_potential_overlap {
+                        None => Bound::Unbounded,
+                        Some(first_potential_overlap) => Bound::Included(*first_potential_overlap),
+                    },
+                    match last_potential_overlap {
+                        Some(x) => Bound::Included(*x),
+                        None => Bound::Unbounded,
+                    },
+                ))
+                .copied()
+                .collect_vec();
+            for segment in &all_overlaps {
+                included_rows.remove(&segment);
+                if segment.0 < removed.0 {
+                    // There's stuff before.
+                    included_rows.insert((segment.0, segment.1.min(removed.0 - 1)));
+                }
+                if segment.1 > removed.1 {
+                    // There's stuff after.
+                    included_rows.insert((segment.0.max(removed.1 + 1), segment.1));
+                }
+            }
+            area += removed.1 - removed.0 + 1;
+            // Reconsolidate.
+            included_rows = included_rows
+                .into_iter()
+                .coalesce(|prev, curr| {
+                    if prev.1 >= curr.0 - 1 {
+                        Ok((prev.0.min(curr.0), prev.1.max(curr.1)))
+                    } else {
+                        Err((prev, curr))
+                    }
+                })
+                .collect();
+        }
+
+        if let Some(prev_col) = prev_col {
+            // Include all prev rows? New ones start now.
+            for &row_range in &prev_included_rows {
+                area += (col - prev_col) * (row_range.1 - row_range.0 + 1);
+            }
+        }
+
+        prev_col = Some(col);
     }
 
-    // for elem in row_to_digs_in_that_row
-    //     .first_key_value()
-    //     .unwrap()
-    //     .1
-    //     .iter_sorted()
-    // {
-    //     let Range { start, end } = elem.range;
-    //     area += end - start;
-    // }
-
-    // for dig in input {
-    //     area += dig.dist;
-    // }
     area
 }
 
